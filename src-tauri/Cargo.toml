@@ -1,0 +1,43 @@
+[package]
+name = "music-player"
+version = "1.0.0"
+edition = "2021"
+description = "轻量级本地音乐播放器"
+authors = ["you"]
+
+[lib]
+name = "music_player_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+crossbeam-channel = "0.5"
+uuid = { version = "1", features = ["v4"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tracing-appender = "0.2"
+rusqlite = { version = "0.32", features = ["bundled"] }
+walkdir = "2"
+lofty = "0.22"
+libloading = "0.8"
+parking_lot = "0.12"
+chrono = "0.4"
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true
