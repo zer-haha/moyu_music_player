@@ -66,3 +66,11 @@ pub async fn playlist_song_reorder(
     playlist_repo::reorder_playlist_songs(&state.db, playlist_id, &song_ids)
         .map_err(|e| e.to_dto())
 }
+
+#[tauri::command]
+pub async fn playlist_reorder(
+    state: State<'_, AppState>,
+    playlist_ids: Vec<i64>,
+) -> CmdResult<()> {
+    playlist_repo::reorder_playlists(&state.db, &playlist_ids).map_err(|e| e.to_dto())
+}

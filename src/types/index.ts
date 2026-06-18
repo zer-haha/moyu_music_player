@@ -34,6 +34,7 @@ export interface Playlist {
   sort_order: number
   created_at: number
   updated_at: number
+  track_count?: number
   tracks: Track[]
 }
 

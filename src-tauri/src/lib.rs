@@ -14,6 +14,25 @@ use std::sync::Mutex;
 use tauri::{Emitter, Manager};
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::{TrayIconBuilder, TrayIconEvent, MouseButton, MouseButtonState};
+use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Shortcut, ShortcutState};
+
+fn setup_media_shortcuts(app: &tauri::AppHandle) {
+    let handle = app.clone();
+    let register = |code: Code, action: &'static str| {
+        let shortcut = Shortcut::new(None, code);
+        let h = handle.clone();
+        if let Err(e) = app.global_shortcut().on_shortcut(shortcut, move |_app, _shortcut, event| {
+            if event.state == ShortcutState::Pressed {
+                let _ = h.emit("app://media_key", action);
+            }
+        }) {
+            tracing::warn!("注册媒体键 {:?} 失败: {}", code, e);
+        }
+    };
+    register(Code::MediaPlayPause, "toggle");
+    register(Code::MediaTrackNext, "next");
+    register(Code::MediaTrackPrevious, "prev");
+}
 
 fn setup_logging() {
     use tracing_subscriber::EnvFilter;
@@ -49,6 +68,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .setup(|app| {
             let handle = app.handle().clone();
 
@@ -109,8 +129,16 @@ pub fn run() {
                 })
                 .build(&app2)?;
 
+            setup_media_shortcuts(&app.handle());
+
             tracing::info!("App setup complete");
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.hide();
+            }
         })
         .invoke_handler(tauri::generate_handler![
             // Audio commands
@@ -137,6 +165,7 @@ pub fn run() {
             commands::playlist_commands::playlist_get_all,
             commands::playlist_commands::playlist_get_songs,
             commands::playlist_commands::playlist_song_reorder,
+            commands::playlist_commands::playlist_reorder,
             // Scan commands
             commands::scan_commands::scan_start_folder,
             commands::scan_commands::scan_cancel,

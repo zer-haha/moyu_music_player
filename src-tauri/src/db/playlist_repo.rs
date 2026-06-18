@@ -13,12 +13,15 @@ pub struct PlaylistDto {
     pub sort_order: i32,
     pub created_at: i64,
     pub updated_at: i64,
+    pub track_count: i32,
 }
 
 pub fn get_all_playlists(db: &Database) -> AppResult<Vec<PlaylistDto>> {
     let conn = db.conn();
     let mut stmt = conn.prepare(
-        "SELECT id, name, kind, source_folder, sort_order, created_at, updated_at FROM playlists ORDER BY sort_order, id"
+        "SELECT p.id, p.name, p.kind, p.source_folder, p.sort_order, p.created_at, p.updated_at,
+                (SELECT COUNT(*) FROM playlist_songs ps WHERE ps.playlist_id = p.id) AS track_count
+         FROM playlists p ORDER BY p.sort_order, p.id"
     ).map_err(|e| AppError::DatabaseError(e.to_string()))?;
 
     let rows = stmt.query_map([], |row| {
@@ -30,6 +33,7 @@ pub fn get_all_playlists(db: &Database) -> AppResult<Vec<PlaylistDto>> {
             sort_order: row.get(4)?,
             created_at: row.get(5)?,
             updated_at: row.get(6)?,
+            track_count: row.get(7)?,
         })
     }).map_err(|e| AppError::DatabaseError(e.to_string()))?;
 
@@ -61,6 +65,7 @@ pub fn create_playlist(db: &Database, name: &str, kind: &str, source_folder: Opt
         sort_order: max_order + 1,
         created_at: now,
         updated_at: now,
+        track_count: 0,
     })
 }
 
@@ -73,12 +78,15 @@ pub fn rename_playlist(db: &Database, id: i64, name: &str) -> AppResult<Playlist
     ).map_err(|e| AppError::DatabaseError(e.to_string()))?;
 
     let pl = conn.query_row(
-        "SELECT id, name, kind, source_folder, sort_order, created_at, updated_at FROM playlists WHERE id = ?1",
+        "SELECT p.id, p.name, p.kind, p.source_folder, p.sort_order, p.created_at, p.updated_at,
+                (SELECT COUNT(*) FROM playlist_songs ps WHERE ps.playlist_id = p.id) AS track_count
+         FROM playlists p WHERE p.id = ?1",
         params![id],
         |row| Ok(PlaylistDto {
             id: row.get(0)?, name: row.get(1)?, kind: row.get(2)?,
             source_folder: row.get(3)?, sort_order: row.get(4)?,
             created_at: row.get(5)?, updated_at: row.get(6)?,
+            track_count: row.get(7)?,
         })
     ).map_err(|e| AppError::DatabaseError(e.to_string()))?;
     Ok(pl)
@@ -185,6 +193,20 @@ pub fn reorder_playlist_songs(db: &Database, playlist_id: i64, song_ids: &[i64])
             "UPDATE playlist_songs SET sort_order = ?3 WHERE playlist_id = ?1 AND song_id = ?2",
             params![playlist_id, song_id, i as i32],
         ).map_err(|e| AppError::DatabaseError(e.to_string()))?;
+    }
+    Ok(())
+}
+
+/// 持久化播放列表侧栏排序
+pub fn reorder_playlists(db: &Database, playlist_ids: &[i64]) -> AppResult<()> {
+    let conn = db.conn();
+    let now = chrono::Utc::now().timestamp();
+    for (i, id) in playlist_ids.iter().enumerate() {
+        conn.execute(
+            "UPDATE playlists SET sort_order = ?2, updated_at = ?3 WHERE id = ?1",
+            params![id, i as i32, now],
+        )
+        .map_err(|e| AppError::DatabaseError(e.to_string()))?;
     }
     Ok(())
 }

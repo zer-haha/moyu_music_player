@@ -142,7 +142,7 @@ const showVolumeIcon = computed(() => {
 </template>
 
 <style scoped>
-.player-bar { height: 80px; display: flex; align-items: center; padding: 0 16px; gap: 16px; background: var(--bg-player); border-top: 1px solid var(--border-color); flex-shrink: 0; }
+.player-bar { height: 80px; display: flex; align-items: center; padding: 0 16px; gap: 16px; background: var(--bg-player); border-top: 1px solid var(--border-color); flex-shrink: 0; user-select: none; -webkit-user-select: none; }
 .player-info { width: 220px; min-width: 120px; display: flex; align-items: center; gap: 10px; }
 .now-playing-icon { flex-shrink: 0; color: var(--accent); opacity: 0.7; }
 .track-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; overflow: hidden; }

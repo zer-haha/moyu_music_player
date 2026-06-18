@@ -104,7 +104,14 @@ impl AudioWorker {
                     self.handle_command(cmd);
                 }
                 Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
-                    // Push state to frontend
+                    // 定时刷新播放位置并推送给前端
+                    if self.current_stream.is_some() {
+                        let was_playing = self.state.status == PlaybackStatus::Playing;
+                        self.update_position();
+                        if was_playing && self.state.status == PlaybackStatus::Ended {
+                            self.handle_track_ended();
+                        }
+                    }
                     self.push_state();
                 }
                 Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {

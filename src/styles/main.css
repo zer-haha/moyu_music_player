@@ -18,6 +18,8 @@ html, body {
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 /* --- 深色主题 (默认) --- */
@@ -116,6 +118,8 @@ button {
 
 input {
   font-family: inherit;
+  user-select: text;
+  -webkit-user-select: text;
 }
 
 /* 禁止拖拽选择 */

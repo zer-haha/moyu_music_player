@@ -18,6 +18,8 @@ export const usePlayerStore = defineStore('player', {
     isSeeking: false,
     seekTargetTime: 0,
     _unlisten: [] as (() => void)[],
+    /** 随机模式：当前轮次剩余曲目索引 */
+    _shuffleQueue: [] as number[],
   }),
 
   getters: {
@@ -30,7 +32,6 @@ export const usePlayerStore = defineStore('player', {
   actions: {
     /** 初始化：注册后端事件监听 */
     async init() {
-      // Listen to audio state events (every 300ms from BASS backend)
       const unlistenState = await listen<AudioStateDto>(
         'audio://state',
         (event) => {
@@ -64,10 +65,7 @@ export const usePlayerStore = defineStore('player', {
       const unlistenErr = await listen<{ song_id: number; path: string; code: string; message: string }>(
         'audio://error',
         (event) => {
-          this.error = event.payload.message
-          this.isPlaying = false
-          this.isLoading = false
-          setTimeout(() => { if (this.error) { this.error = ''; this.playNext() } }, 3000)
+          this.showSkipError(event.payload.message || '播放失败')
         }
       )
 
@@ -75,11 +73,55 @@ export const usePlayerStore = defineStore('player', {
       try { await invoke('audio_set_volume', { volume: this.volume }) } catch {}
     },
 
+    showSkipError(msg: string) {
+      this.error = msg.includes('跳过') ? msg : `${msg}，已跳过`
+      this.isPlaying = false
+      this.isLoading = false
+      setTimeout(() => {
+        if (this.error) {
+          this.error = ''
+          this.playNext()
+        }
+      }, 2500)
+    },
+
+    /** 恢复上次会话：加载曲目与进度，保持暂停 */
+    async restoreSession(track: Track, positionMs: number) {
+      if (track.missing || !track.playable) return
+
+      this.currentTrack = track
+      this.isLoading = true
+      this.error = ''
+
+      try {
+        const state = await invoke<AudioStateDto>('audio_play', {
+          songId: track.id,
+          path: track.path,
+        })
+        this.duration = state.duration_ms / 1000
+        await invoke('audio_pause')
+        this.isPlaying = false
+
+        if (positionMs > 0) {
+          const seconds = positionMs / 1000
+          await invoke('audio_seek', { seconds })
+          this.currentTime = seconds
+        } else {
+          this.currentTime = 0
+        }
+      } catch {
+        // 恢复失败时仅保留选中状态
+        this.currentTime = positionMs / 1000
+        this.isPlaying = false
+      } finally {
+        this.isLoading = false
+      }
+    },
+
     /** 播放指定歌曲 */
     async playTrack(track: Track) {
       if (track.missing || !track.playable) {
-        this.error = track.missing ? '文件不存在，已跳过' : '无法播放此文件'
-        setTimeout(() => { this.error = ''; this.playNext() }, 2000)
+        this.showSkipError(track.missing ? '文件不存在' : '无法播放此文件')
         return
       }
 
@@ -87,6 +129,7 @@ export const usePlayerStore = defineStore('player', {
       this.currentTrack = track
       this.isLoading = true
       this.currentTime = 0
+      this._shuffleQueue = []
 
       try {
         const state = await invoke<AudioStateDto>('audio_play', {
@@ -95,11 +138,9 @@ export const usePlayerStore = defineStore('player', {
         })
         this.duration = state.duration_ms / 1000
         this.isPlaying = state.status === 'playing'
-      } catch (e: any) {
-        this.error = e?.message || String(e) || '播放失败'
-        this.isPlaying = false
         this.isLoading = false
-        setTimeout(() => { if (this.error) { this.error = ''; this.playNext() } }, 2000)
+      } catch (e: any) {
+        this.showSkipError(e?.message || String(e) || '播放失败')
       }
     },
 
@@ -126,6 +167,16 @@ export const usePlayerStore = defineStore('player', {
       try { await invoke('audio_toggle_pause') } catch {}
     },
 
+    /** 构建随机播放队列（一轮内不重复） */
+    buildShuffleQueue(tracks: Track[], currentIndex: number) {
+      const indices = tracks.map((_, i) => i).filter((i) => i !== currentIndex)
+      for (let i = indices.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1))
+        ;[indices[i], indices[j]] = [indices[j], indices[i]]
+      }
+      this._shuffleQueue = indices
+    },
+
     playNext() {
       const tracks = usePlaylistStore().currentTracks
       if (tracks.length === 0) return
@@ -144,9 +195,11 @@ export const usePlayerStore = defineStore('player', {
           break
         case 'random': {
           if (tracks.length === 1) { this.playTrack(this.currentTrack); break }
-          let ri: number
-          do { ri = Math.floor(Math.random() * tracks.length) } while (ri === ci)
-          this.playTrack(tracks[ri])
+          if (this._shuffleQueue.length === 0) {
+            this.buildShuffleQueue(tracks, ci)
+          }
+          const nextIdx = this._shuffleQueue.shift()!
+          this.playTrack(tracks[nextIdx])
           break
         }
       }
@@ -155,6 +208,14 @@ export const usePlayerStore = defineStore('player', {
     playPrev() {
       const tracks = usePlaylistStore().currentTracks
       if (tracks.length === 0 || !this.currentTrack) return
+
+      // 播放超过 3 秒则回到本曲开头
+      if (this.currentTime > 3) {
+        this.currentTime = 0
+        this.commitSeek(0)
+        return
+      }
+
       const ci = tracks.findIndex((t) => t.id === this.currentTrack!.id)
       this.playTrack(tracks[ci <= 0 ? tracks.length - 1 : ci - 1])
     },
@@ -192,11 +253,13 @@ export const usePlayerStore = defineStore('player', {
 
     setPlayMode(mode: PlayMode) {
       this.playMode = mode
+      this._shuffleQueue = []
     },
 
     cyclePlayMode() {
       const modes: PlayMode[] = ['list_loop', 'single_loop', 'sequence', 'random']
       this.playMode = modes[(modes.indexOf(this.playMode) + 1) % modes.length]
+      this._shuffleQueue = []
       invoke('audio_set_play_mode', { mode: this.playMode }).catch(() => {})
     },
 

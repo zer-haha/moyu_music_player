@@ -1,10 +1,19 @@
 import { defineStore } from 'pinia'
 import { invoke } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { LogicalSize, LogicalPosition } from '@tauri-apps/api/dpi'
 import { usePlaylistStore } from './playlist'
 import { usePlayerStore } from './player'
 import type { Theme, PlaybackStateDto } from '../types'
+
+export interface ScanProgress {
+  active: boolean
+  current: number
+  total: number
+  message: string
+  taskId: string | null
+}
 
 export const useAppStore = defineStore('app', {
   state: () => ({
@@ -16,12 +25,88 @@ export const useAppStore = defineStore('app', {
     isDragging: false,
     dragTargetPlaylistId: '',
     scanningMessage: '',
+    scanProgress: {
+      active: false,
+      current: 0,
+      total: 0,
+      message: '',
+      taskId: null,
+    } as ScanProgress,
+    _scanUnlisten: null as (() => void) | null,
   }),
 
   actions: {
+    async setupScanListener() {
+      if (this._scanUnlisten) return
+
+      const unlistenProgress = await listen<{
+        task_id: string
+        scanned_files: number
+        matched_audio_files: number
+        added: number
+        skipped_duplicate: number
+        failed: number
+        current_path?: string
+      }>('scan://progress', (event) => {
+        const p = event.payload
+        this.scanProgress = {
+          active: true,
+          current: p.matched_audio_files || p.scanned_files,
+          total: Math.max(p.matched_audio_files || p.scanned_files, 1),
+          message: `正在添加音乐 ${p.added + p.skipped_duplicate}/${p.matched_audio_files || '...'}`,
+          taskId: p.task_id,
+        }
+      })
+
+      const unlistenFinished = await listen<{
+        task_id: string
+        added: number
+        skipped_duplicate: number
+        failed: number
+      }>('scan://finished', (event) => {
+        const p = event.payload
+        this.scanProgress.active = false
+        this.scanningMessage = `已添加 ${p.added} 首${p.skipped_duplicate > 0 ? `，跳过 ${p.skipped_duplicate} 首重复` : ''}`
+        setTimeout(() => { this.scanningMessage = '' }, 4000)
+      })
+
+      const unlistenStarted = await listen<{ task_id: string }>('scan://started', (event) => {
+        this.scanProgress = {
+          active: true,
+          current: 0,
+          total: 0,
+          message: '正在扫描文件夹...',
+          taskId: event.payload.task_id,
+        }
+      })
+
+      const unlistenCancelled = await listen('scan://cancelled', () => {
+        this.scanProgress.active = false
+        this.scanningMessage = '已取消添加'
+        setTimeout(() => { this.scanningMessage = '' }, 2000)
+      })
+
+      this._scanUnlisten = () => {
+        unlistenProgress()
+        unlistenFinished()
+        unlistenStarted()
+        unlistenCancelled()
+      }
+    },
+
+    async cancelScan() {
+      if (this.scanProgress.taskId) {
+        try {
+          await invoke('scan_cancel', { taskId: this.scanProgress.taskId })
+        } catch {}
+      }
+    },
+
     async loadConfig() {
       const playlistStore = usePlaylistStore()
       const playerStore = usePlayerStore()
+
+      await this.setupScanListener()
 
       try {
         const settings = await invoke<Record<string, string>>('settings_get')
@@ -37,18 +122,13 @@ export const useAppStore = defineStore('app', {
           playerStore.playMode = pbState.play_mode as any
         }
 
-        await playlistStore.init()
+        await playlistStore.init(pbState.current_playlist_id)
 
-        if (pbState.current_playlist_id) {
-          playlistStore.setCurrentPlaylist(pbState.current_playlist_id)
-        }
-
+        let restoreTrack = null
         if (pbState.current_song_id) {
-          const allTracks = playlistStore.allTracks
-          const track = allTracks.find((t) => t.id === pbState.current_song_id)
-          if (track) {
-            playerStore.currentTrack = track
-          }
+          restoreTrack = playlistStore.currentTracks.find(
+            (t) => t.id === pbState.current_song_id
+          ) || null
         }
 
         const ww = settings.window_width ? parseInt(settings.window_width) : null
@@ -65,6 +145,14 @@ export const useAppStore = defineStore('app', {
             }
           } catch {}
         }
+
+        // 恢复上次播放位置（不自动播放）
+        if (restoreTrack) {
+          await playerStore.restoreSession(restoreTrack, pbState.position_ms || 0)
+        }
+
+        // 后台检查当前列表缺失文件
+        playlistStore.checkCurrentTracksExist()
       } catch (e) {
         console.warn('加载配置失败:', e)
         await playlistStore.init()
@@ -128,6 +216,12 @@ export const useAppStore = defineStore('app', {
     setTheme(theme: Theme) {
       this.theme = theme
       this.saveConfig()
+    },
+
+    async hideToTray() {
+      try {
+        await getCurrentWindow().hide()
+      } catch {}
     },
 
     toggleMiniMode() {

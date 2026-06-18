@@ -34,7 +34,7 @@ function startDrag(e: MouseEvent) {
 }
 
 async function hideToTray() {
-  try { await getCurrentWindow().close() } catch {}
+  await appStore.hideToTray()
 }
 
 function onProgressMouseDown(e: MouseEvent) {
@@ -90,7 +90,7 @@ function onProgressMouseDown(e: MouseEvent) {
           <line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/>
         </svg>
       </button>
-      <button class="mini-btn mini-close" title="关闭" @click="hideToTray">
+      <button class="mini-btn mini-close" title="最小化到托盘" @click="hideToTray">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
           <line x1="6" y1="6" x2="18" y2="18"/><line x1="6" y1="18" x2="18" y2="6"/>
         </svg>
