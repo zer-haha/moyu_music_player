@@ -30,6 +30,7 @@ type BASS_ChannelGetAttributeFn = unsafe extern "C" fn(handle: DWORD, attrib: DW
 type BASS_ChannelIsActiveFn = unsafe extern "C" fn(handle: DWORD) -> DWORD;
 type BASS_ChannelSetSyncFn = unsafe extern "C" fn(handle: DWORD, type_: DWORD, param: QWORD, proc: SYNCPROC, user: *mut c_void) -> DWORD;
 type BASS_SetConfigFn = unsafe extern "C" fn(option: DWORD, value: DWORD) -> BOOL;
+type BASS_StartFn = unsafe extern "C" fn() -> BOOL;
 
 pub struct BassLoader {
     lib: Library,
@@ -58,6 +59,7 @@ pub struct BassFunctions {
     pub bass_channel_is_active: BASS_ChannelIsActiveFn,
     pub bass_channel_set_sync: BASS_ChannelSetSyncFn,
     pub bass_set_config: Option<BASS_SetConfigFn>,
+    pub bass_start: Option<BASS_StartFn>,
 }
 
 unsafe impl Send for BassFunctions {}
@@ -115,6 +117,7 @@ impl BassLoader {
             let bass_channel_is_active = self.load_sym::<BASS_ChannelIsActiveFn>("BASS_ChannelIsActive")?;
             let bass_channel_set_sync = self.load_sym::<BASS_ChannelSetSyncFn>("BASS_ChannelSetSync")?;
             let bass_set_config = self.load_sym::<BASS_SetConfigFn>("BASS_SetConfig").ok();
+            let bass_start = self.load_sym::<BASS_StartFn>("BASS_Start").ok();
 
             Ok(BassFunctions {
                 bass_init,
@@ -138,6 +141,7 @@ impl BassLoader {
                 bass_channel_is_active,
                 bass_channel_set_sync,
                 bass_set_config,
+                bass_start,
             })
         }
     }

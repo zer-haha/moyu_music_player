@@ -69,7 +69,15 @@ export const usePlayerStore = defineStore('player', {
         }
       )
 
-      this._unlisten.push(unlistenState, unlistenEnded, unlistenErr)
+      const unlistenRecovered = await listen<{ song_id: number; path: string }>(
+        'audio://device_recovered',
+        () => {
+          this.error = ''
+          this.isLoading = false
+        }
+      )
+
+      this._unlisten.push(unlistenState, unlistenEnded, unlistenErr, unlistenRecovered)
       try { await invoke('audio_set_volume', { volume: this.volume }) } catch {}
     },
 

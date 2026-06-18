@@ -50,6 +50,9 @@ pub const BASS_ERROR_PROTOCOL: DWORD = 48;
 pub const BASS_ERROR_DENIED: DWORD = 49;
 pub const BASS_ERROR_UNKNOWN: DWORD = -1i32 as DWORD;
 
+pub const BASS_CONFIG_DEV_NONSTOP: DWORD = 24;
+pub const BASS_CONFIG_DEV_DEFAULT: DWORD = 50;
+
 pub const BASS_ACTIVE_STOPPED: DWORD = 0;
 pub const BASS_ACTIVE_PLAYING: DWORD = 1;
 pub const BASS_ACTIVE_STALLED: DWORD = 2;
@@ -97,7 +100,11 @@ pub fn bass_error_message(code: DWORD) -> String {
         BASS_ERROR_CODEC => "编解码器不支持，可能需要安装插件".to_string(),
         BASS_ERROR_FILEFORM => "文件格式无法识别或编码不支持".to_string(),
         BASS_ERROR_DECODE => "解码失败，文件可能已损坏".to_string(),
-        BASS_ERROR_NOCHAN => "无法创建播放通道".to_string(),
+        BASS_ERROR_DEVICE => "音频设备不可用（可能因蓝牙耳机切换）".to_string(),
+        BASS_ERROR_INIT => "音频设备未初始化".to_string(),
+        BASS_ERROR_START => "音频输出未启动".to_string(),
+        BASS_ERROR_HANDLE => "播放通道已失效".to_string(),
+        BASS_ERROR_BUFLOST => "音频缓冲丢失".to_string(),
         _ => format!("BASS 错误 {}", code),
     }
 }

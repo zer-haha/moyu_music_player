@@ -8,6 +8,7 @@ use std::ffi::c_void;
 use std::os::windows::ffi::OsStrExt;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -63,6 +64,7 @@ pub struct AudioWorker {
     app_handle: AppHandle,
     cmd_rx: Receiver<AudioCommand>,
     end_flag: Arc<AtomicBool>,
+    last_recovery_at: Option<Instant>,
 }
 
 impl AudioWorker {
@@ -82,6 +84,7 @@ impl AudioWorker {
             app_handle,
             cmd_rx,
             end_flag: Arc::new(AtomicBool::new(false)),
+            last_recovery_at: None,
         }
     }
 
@@ -104,12 +107,17 @@ impl AudioWorker {
                     self.handle_command(cmd);
                 }
                 Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
-                    // 定时刷新播放位置并推送给前端
                     if self.current_stream.is_some() {
                         let was_playing = self.state.status == PlaybackStatus::Playing;
                         self.update_position();
                         if was_playing && self.state.status == PlaybackStatus::Ended {
-                            self.handle_track_ended();
+                            if self.is_premature_stop() {
+                                let _ = self.try_recover_playback("poll_premature_stop");
+                            } else {
+                                self.handle_track_ended();
+                            }
+                        } else if was_playing {
+                            self.check_playback_stall();
                         }
                     }
                     self.push_state();
@@ -123,11 +131,36 @@ impl AudioWorker {
     }
 
     fn init_bass(&mut self) -> Result<(), AppError> {
-        let audio_core_dir = crate::audio::bass_loader::resolve_audio_core_dir(&self.app_handle)?;
-        self.audio_core_path = Some(audio_core_dir.to_string_lossy().to_string());
+        if self.bass_init_ok {
+            return Ok(());
+        }
 
-        let loader = BassLoader::load(&audio_core_dir)?;
-        let funcs = loader.load_functions()?;
+        let audio_core_dir = if let Some(ref path) = self.audio_core_path {
+            PathBuf::from(path)
+        } else {
+            let dir = crate::audio::bass_loader::resolve_audio_core_dir(&self.app_handle)?;
+            self.audio_core_path = Some(dir.to_string_lossy().to_string());
+            dir
+        };
+
+        if self.loader.is_none() {
+            let loader = BassLoader::load(&audio_core_dir)?;
+            let funcs = loader.load_functions()?;
+            self.loader = Some(loader);
+            self.funcs = Some(funcs);
+        }
+
+        let funcs = self.funcs.as_ref().ok_or_else(|| {
+            AppError::AudioCoreMissing("BASS 未加载".to_string())
+        })?;
+
+        // 跟随系统默认输出设备（蓝牙耳机切换时自动跟踪）
+        if let Some(set_config) = funcs.bass_set_config {
+            unsafe {
+                (set_config)(BASS_CONFIG_DEV_DEFAULT, 1);
+                (set_config)(BASS_CONFIG_DEV_NONSTOP, 1);
+            }
+        }
 
         // BASS_Init(-1, 44100, 0, 0, NULL)
         let result = unsafe { (funcs.bass_init)(-1, 44100, 0, std::ptr::null_mut(), std::ptr::null()) };
@@ -143,6 +176,7 @@ impl AudioWorker {
 
         self.bass_version = Some(unsafe { (funcs.bass_get_version)() });
         self.bass_init_ok = true;
+        self.state.loaded_plugins.clear();
 
         // Load plugins
         let plugins = vec![
@@ -196,17 +230,185 @@ impl AudioWorker {
             }
         }
 
-        self.funcs = Some(funcs);
-        self.loader = Some(loader);
-
         tracing::info!("BASS initialized successfully, version: {:?}", self.bass_version);
         Ok(())
+    }
+
+    /// 释放 BASS 输出（保留 DLL 加载），用于设备切换后重建
+    fn free_bass_output(&mut self) {
+        if let Some(funcs) = self.funcs.as_ref() {
+            if let Some(stream) = self.current_stream.take() {
+                unsafe { (funcs.bass_stream_free)(stream); }
+            }
+            if self.bass_init_ok {
+                unsafe { (funcs.bass_free)(); }
+            }
+        }
+        self.bass_init_ok = false;
+        self.current_stream = None;
+        self.state.loaded_plugins.clear();
+    }
+
+    fn is_premature_stop(&self) -> bool {
+        self.state.duration_ms > 0 && self.state.position_ms + 1500 < self.state.duration_ms
+    }
+
+    fn is_recoverable_error(code: i32) -> bool {
+        matches!(
+            code as u32,
+            BASS_ERROR_DEVICE
+                | BASS_ERROR_INIT
+                | BASS_ERROR_START
+                | BASS_ERROR_HANDLE
+                | BASS_ERROR_BUFLOST
+                | BASS_ERROR_DRIVER
+        )
+    }
+
+    fn can_attempt_recovery(&mut self) -> bool {
+        match self.last_recovery_at {
+            Some(t) => t.elapsed() > Duration::from_secs(2),
+            None => true,
+        }
+    }
+
+    fn mark_recovery_attempt(&mut self) {
+        self.last_recovery_at = Some(Instant::now());
+    }
+
+    /// 尝试 BASS_Start 重启输出（WASAPI 设备恢复）
+    fn try_bass_start(&self) -> bool {
+        let funcs = match self.funcs.as_ref() {
+            Some(f) => f,
+            None => return false,
+        };
+        if let Some(bass_start) = funcs.bass_start {
+            unsafe { bass_start() != 0 }
+        } else {
+            false
+        }
+    }
+
+    /// 蓝牙耳机等设备切换后恢复播放
+    fn try_recover_playback(&mut self, reason: &str) -> Result<(), AppError> {
+        if !self.can_attempt_recovery() {
+            return Err(AppError::PlaybackError("恢复冷却中".to_string()));
+        }
+        self.mark_recovery_attempt();
+
+        let song_id = self.state.current_song_id;
+        let path = self.state.current_path.clone();
+        let position_secs = self.state.position_ms as f64 / 1000.0;
+        let was_playing = matches!(
+            self.state.status,
+            PlaybackStatus::Playing | PlaybackStatus::Ended
+        );
+
+        tracing::warn!("尝试恢复音频输出 ({})", reason);
+
+        // 第一步：尝试 BASS_Start（不重载曲目）
+        if self.try_bass_start() {
+            if let Some(stream) = self.current_stream {
+                if let Some(funcs) = self.funcs.as_ref() {
+                    let play_ok = unsafe { (funcs.bass_channel_play)(stream, 0) } != 0;
+                    if play_ok {
+                        self.state.status = PlaybackStatus::Playing;
+                        self.state.last_error = None;
+                        self.emit_device_recovered();
+                        tracing::info!("BASS_Start 恢复成功");
+                        return Ok(());
+                    }
+                }
+            }
+        }
+
+        // 第二步：重建 BASS 设备并重新加载当前曲目
+        let (Some(song_id), Some(path)) = (song_id, path) else {
+            return Err(AppError::NoActiveStream);
+        };
+
+        self.free_bass_output();
+        self.init_bass()?;
+
+        if was_playing {
+            self.do_play(song_id, &path)?;
+            if position_secs > 0.5 {
+                let _ = self.do_seek(position_secs);
+            }
+        } else {
+            self.do_play(song_id, &path)?;
+            let _ = self.do_pause();
+            if position_secs > 0.5 {
+                let _ = self.do_seek(position_secs);
+            }
+        }
+
+        self.emit_device_recovered();
+        tracing::info!("音频设备已重建并恢复播放");
+        Ok(())
+    }
+
+    fn emit_device_recovered(&self) {
+        let _ = self.app_handle.emit(
+            "audio://device_recovered",
+            serde_json::json!({
+                "song_id": self.state.current_song_id,
+                "path": self.state.current_path,
+            }),
+        );
+    }
+
+    fn check_playback_stall(&mut self) {
+        if self.state.status != PlaybackStatus::Playing {
+            return;
+        }
+        let funcs = match self.funcs.as_ref() {
+            Some(f) => f,
+            None => return,
+        };
+        let stream = match self.current_stream {
+            Some(s) => s,
+            None => return,
+        };
+        let active = unsafe { (funcs.bass_channel_is_active)(stream) };
+        if active == BASS_ACTIVE_STOPPED || active == BASS_ACTIVE_STALLED {
+            let _ = self.try_recover_playback("channel_stalled");
+        }
+    }
+
+    fn play_with_recovery(
+        &mut self,
+        song_id: i64,
+        path: &str,
+    ) -> Result<AudioStateDto, AppError> {
+        match self.do_play(song_id, path) {
+            Ok(dto) => Ok(dto),
+            Err(e) => {
+                let should_retry = match &e {
+                    AppError::PlaybackError(msg) => {
+                        msg.contains("设备") || msg.contains("通道") || msg.contains("缓冲")
+                    }
+                    _ => false,
+                };
+                if !should_retry {
+                    if let Some(code) = self.last_bass_error {
+                        if !Self::is_recoverable_error(code) {
+                            return Err(e);
+                        }
+                    } else {
+                        return Err(e);
+                    }
+                }
+                self.try_recover_playback("play_failed")?;
+                self.do_play(song_id, path)
+            }
+        }
     }
 
     fn handle_command(&mut self, cmd: AudioCommand) {
         match cmd {
             AudioCommand::Play { song_id, path, reply } => {
-                let result = self.do_play(song_id, &path);
+                let result = self.play_with_recovery(song_id, &path);
                 let _ = reply.send(result.map_err(|e| e.to_string()));
             }
             AudioCommand::Pause { reply } => {
@@ -366,7 +568,16 @@ impl AudioWorker {
             let result = unsafe { (funcs.bass_channel_play)(stream, 0) };
             if result != 0 {
                 self.state.status = PlaybackStatus::Playing;
+                return Ok(AudioStateDto::from(&self.state));
             }
+
+            let err = unsafe { (funcs.bass_error_get_code)() };
+            self.last_bass_error = Some(err);
+            tracing::warn!("恢复播放失败 ({}), 尝试重建音频设备", err);
+
+            self.try_recover_playback("resume_failed")?;
+        } else if self.state.current_song_id.is_some() && self.state.current_path.is_some() {
+            self.try_recover_playback("resume_no_stream")?;
         }
         Ok(AudioStateDto::from(&self.state))
     }
@@ -469,12 +680,7 @@ impl AudioWorker {
 
     fn shutdown(&mut self) {
         tracing::info!("Audio worker shutting down");
-        if let Some(funcs) = self.funcs.as_ref() {
-            if let Some(stream) = self.current_stream.take() {
-                unsafe { (funcs.bass_stream_free)(stream); }
-            }
-            unsafe { (funcs.bass_free)(); }
-        }
+        self.free_bass_output();
     }
 }
 
