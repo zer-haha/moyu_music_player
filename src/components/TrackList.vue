@@ -22,6 +22,27 @@ const dragIndex = ref(-1)
 const dropIndex = ref(-1)
 const isImporting = ref(false)
 
+const colWidths = ref({ index: 42, format: 140, duration: 70 })
+const gridCols = computed(() =>
+  `${colWidths.value.index}px minmax(80px,1fr) ${colWidths.value.format}px ${colWidths.value.duration}px`
+)
+
+function startResize(e: MouseEvent, col: 'index' | 'format' | 'duration') {
+  e.preventDefault()
+  e.stopPropagation()
+  const startX = e.clientX
+  const startWidth = colWidths.value[col]
+  const onMove = (ev: MouseEvent) => {
+    colWidths.value = { ...colWidths.value, [col]: Math.max(30, startWidth + ev.clientX - startX) }
+  }
+  const onUp = () => {
+    document.removeEventListener('mousemove', onMove)
+    document.removeEventListener('mouseup', onUp)
+  }
+  document.addEventListener('mousemove', onMove)
+  document.addEventListener('mouseup', onUp)
+}
+
 const filteredTracks = computed(() => {
   const tracks = playlistStore.currentTracks
   const q = appStore.searchQuery.toLowerCase().trim()
@@ -199,6 +220,15 @@ function hideContextMenu() {
   emptyContextMenu.value.show = false
 }
 
+async function showInFolder() {
+  if (contextMenu.value.track) {
+    try {
+      await invoke('show_in_folder', { filePath: contextMenu.value.track.path })
+    } catch {}
+  }
+  hideContextMenu()
+}
+
 async function removeTrack() {
   if (contextMenu.value.track) {
     const id = contextMenu.value.track.id
@@ -297,12 +327,22 @@ function isTrackMissing(t: Track): boolean {
     tabindex="0"
     @keydown="onKeyDown"
     @click="containerRef?.focus()"
+    :style="{ '--grid-cols': gridCols }"
   >
     <div class="track-header">
-      <span class="col-index">#</span>
+      <span class="col-index">
+        #
+        <div class="resize-handle" @mousedown="startResize($event, 'index')"></div>
+      </span>
       <span class="col-title">歌曲</span>
-      <span class="col-artist">歌手</span>
-      <span class="col-duration">时长</span>
+      <span class="col-format">
+        格式
+        <div class="resize-handle" @mousedown="startResize($event, 'format')"></div>
+      </span>
+      <span class="col-duration">
+        时长
+        <div class="resize-handle" @mousedown="startResize($event, 'duration')"></div>
+      </span>
     </div>
     <div
       v-if="filteredTracks.length > 0"
@@ -353,7 +393,7 @@ function isTrackMissing(t: Track): boolean {
               {{ track.title }}
               <span v-if="isTrackMissing(track)" class="missing-tag">文件不存在</span>
             </span>
-            <span class="col-artist">{{ track.artist || '—' }}</span>
+            <span class="col-format">{{ (track.format || track.extension || '—').toUpperCase() }}</span>
             <span class="col-duration">{{ formatTime(trackDuration(track)) }}</span>
           </div>
         </div>
@@ -389,6 +429,7 @@ function isTrackMissing(t: Track): boolean {
       @click.stop
     >
       <div class="ctx-item" @click="playFromContext">播放</div>
+      <div class="ctx-item" @click="showInFolder">在资源管理器中显示</div>
       <template v-if="otherPlaylists.length > 0">
         <div class="ctx-divider"></div>
         <div class="ctx-label">添加到列表</div>
@@ -409,7 +450,7 @@ function isTrackMissing(t: Track): boolean {
       >
         移除选中 ({{ selectedIds.size }})
       </div>
-      <div class="ctx-item danger" @click="removeTrack">从列表中移除</div>
+      <div v-else class="ctx-item danger" @click="removeTrack">从列表中移除</div>
     </div>
     <div
       v-if="emptyContextMenu.show"
@@ -435,7 +476,7 @@ function isTrackMissing(t: Track): boolean {
 }
 .track-header {
   display: grid;
-  grid-template-columns: 42px 1fr 160px 60px;
+  grid-template-columns: var(--grid-cols, 42px 1fr 140px 70px);
   padding: 6px 16px;
   font-size: 11px;
   font-weight: 600;
@@ -453,7 +494,7 @@ function isTrackMissing(t: Track): boolean {
 }
 .track-row {
   display: grid;
-  grid-template-columns: 42px 1fr 160px 60px;
+  grid-template-columns: var(--grid-cols, 42px 1fr 140px 70px);
   padding: 0 16px;
   height: 36px;
   align-items: center;
@@ -520,6 +561,7 @@ function isTrackMissing(t: Track): boolean {
   color: var(--text-muted);
   font-size: 12px;
   text-align: center;
+  position: relative;
 }
 .col-title {
   overflow: hidden;
@@ -530,18 +572,32 @@ function isTrackMissing(t: Track): boolean {
   align-items: center;
   gap: 8px;
 }
-.col-artist {
+.col-format {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--text-secondary);
   padding-right: 8px;
+  position: relative;
 }
 .col-duration {
   color: var(--text-muted);
   font-size: 12px;
   text-align: right;
   font-variant-numeric: tabular-nums;
+  position: relative;
+}
+.resize-handle {
+  position: absolute;
+  right: -2px;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  cursor: col-resize;
+  z-index: 10;
+}
+.resize-handle:hover {
+  background: var(--accent);
 }
 .missing-tag {
   font-size: 10px;

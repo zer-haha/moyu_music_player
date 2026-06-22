@@ -17,7 +17,9 @@
         "minWidth": 640,
         "minHeight": 420,
         "decorations": false,
-        "center": true
+        "center": true,
+        "visible": false,
+        "skipTaskbar": true
       }
     ],
     "security": {
@@ -26,7 +28,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis", "msi"],
+    "targets": ["nsis"],
     "resources": {
       "resources/audio_core": "audio_core"
     },

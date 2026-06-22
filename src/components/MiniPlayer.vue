@@ -33,9 +33,7 @@ function startDrag(e: MouseEvent) {
   try { getCurrentWindow().startDragging() } catch {}
 }
 
-async function hideToTray() {
-  await appStore.hideToTray()
-}
+
 
 function onProgressMouseDown(e: MouseEvent) {
   e.stopPropagation()
@@ -90,9 +88,11 @@ function onProgressMouseDown(e: MouseEvent) {
           <line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/>
         </svg>
       </button>
-      <button class="mini-btn mini-close" title="最小化到托盘" @click="hideToTray">
+      <button class="mini-btn" :class="{ active: appStore.isAlwaysOnTop }" title="置顶" @click="appStore.toggleAlwaysOnTop()">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-          <line x1="6" y1="6" x2="18" y2="18"/><line x1="6" y1="18" x2="18" y2="6"/>
+          <path d="M12 2L12 16" />
+          <path d="M8 6l4-4 4 4" />
+          <line x1="4" y1="20" x2="20" y2="20" />
         </svg>
       </button>
     </div>
@@ -116,7 +116,7 @@ function onProgressMouseDown(e: MouseEvent) {
 .mini-btn { display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; border: none; background: transparent; color: var(--text-secondary); border-radius: 50%; cursor: pointer; transition: all 0.15s; }
 .mini-btn:hover { color: var(--text-primary); background: var(--bg-hover); }
 .mini-play { color: var(--text-primary); }
-.mini-close:hover { background: #e81123; color: white; }
+.mini-btn.active { color: var(--accent); }
 .mini-actions { display: flex; align-items: center; gap: 0; flex-shrink: 0; }
 .mini-progress { position: absolute; bottom: 0; left: 0; right: 0; height: 3px; display: flex; align-items: center; cursor: pointer; }
 .mini-progress:hover { height: 5px; }
